@@ -1,0 +1,204 @@
+#!/usr/bin/python
+
+import socket
+import sys
+import urllib
+import struct
+import math
+import thread
+
+
+#Checking the command line arguments
+def command_args():
+
+	if len(sys.argv) != 5:
+		print "Error: Improper number of arguments"
+		sys.exit()
+
+	if sys.argv[1] != '-p' or sys.argv[3] != '-n':
+		print "Error: Improper format of arguments"
+		sys.exit()
+	else:
+		port = int(sys.argv[2])
+		cdn_name = sys.argv[4]
+	return port, cdn_name
+
+#Creating a dummy socket, to extract the source IP addr from the socket
+def src_ip():
+
+	sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+	sock.connect(('www.google.com', 80))
+	src_ipaddr = sock.getsockname()[0]
+	print "Source IP: ", src_ipaddr
+	return src_ipaddr
+
+
+#Creating a http server socket 
+def server_socket(src_ip, port):
+
+	server_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+	try:
+		server_sock.bind((src_ip, port))
+
+	except socket.error as err:
+		print "Error: Socket Binding Failed."
+		print "Error Code: " + str(err[0]) + " Message: " + str(err[1])
+		sys.exit()
+	return server_sock
+
+def server_forever(server_socket, req_array, cdn_name):
+
+	while True:
+		try:
+			#keep listening to incoming requests
+			data = server_socket.recvfrom(1024000)
+
+		except KeyboardInterrupt:
+			print "\nShutting down server......."
+			sys.exit()
+
+		thread.start_new_thread(serve_request,(server_socket, req_array, data, cdn_name)) #multithreading to serve each client
+
+
+def serve_request(sock1, req_arr, data1, cdn_name):
+
+	client_ip_port = data1[1]
+	client_ip = client_ip_port[0]
+
+	client_port = client_ip_port[1]
+	#dictionary to maintain the best replica
+	if client_ip in req_arr:
+		best_replica = req_arr[client_ip]
+	else:
+		lati, longi = get_location(client_ip)		#find the best available server in terms of geographic locations
+		best_replica, client_req_dict = replicas (lati, longi, req_arr, client_ip)
+
+	unpack_data(data1, sock1, client_ip, client_port, best_replica, cdn_name)
+
+
+#retrieving the lattitute and longitude of each replica
+def get_location(host_ip):
+	key = "1c117379fb3aa978ef1555f38daff7428f193e977eaa5f0aaa2ac28a8d1fcbdb"
+	response = urllib.urlopen(url = 'http://api.ipinfodb.com/v3/ip-city/?key=' + key + '&ip=' + str(host_ip))
+	location_info = response.read().split(';')
+	latitude = float(location_info[8])
+	longitude = float(location_info[9])
+	return latitude, longitude
+
+
+#calculating the closest replica
+def replicas(lat1, long1, req_array, src_ip):
+
+	replica_server_locations = {'52.90.80.45':[39.04372, -77.48749],
+					'54.183.23.203':[37.77493, -122.41942],
+				 	'54.70.111.57':[45.52345, -122.67621],
+					'52.215.87.82':[53.34399, -6.26719],
+					'52.28.249.79':[50.11552, 8.68417],
+					'54.169.10.54':[1.28967, 103.85007],
+					'52.62.198.57':[-33.86785, 151.20732],
+					'52.192.64.163':[35.689506, 139.6917],
+					'54.233.152.60':[-23.5475, -46.63611] }
+	for rep in replica_server_locations:
+		replica_server_locations[rep] = calculate_distance(lat1, long1,replica_server_locations[rep])
+
+	closest_replica = min(replica_server_locations, key = replica_server_locations.get)
+	print "Closest replica: ", closest_replica
+	req_array[src_ip] = closest_replica 
+
+	return closest_replica, req_array
+
+#Computing distance of each replica for effective fetching of data
+def calculate_distance(lat1, long1, replica_loc):
+
+	lat2 = replica_loc[0]
+	long2 = replica_loc[1]
+
+	latitude_difference = math.radians(lat2 - lat1) 
+	longitude_difference = math.radians(long2 - long1)
+
+	#Using Haveshine Formula
+
+	variance_a = (math.sin(latitude_difference/2) ** 2) + (math.cos(math.radians(lat1))) * (math.cos(math.radians(lat2))) * (math.sin(longitude_difference/2) ** 2)
+
+	variance_c = 2 * math.atan2(math.sqrt(variance_a), math.sqrt(1-variance_a))
+
+	#Earth's distance = 6371 kms
+	variance_d = 6371 * variance_c
+
+	return variance_d
+
+#Unpacking the DNS request from the client, packing the answer header and sending the response to the client 
+def unpack_data(recv_data, sock, client_ip, client_port, closest_ip, server_name):
+
+	query = recv_data[0].strip()
+
+	info = recv_data[1]
+	dns_query_header = struct.unpack('!HHHHHH', query[0:12])
+
+	trans_id = dns_query_header[0]
+	flags = dns_query_header[1]
+	no_of_questions = dns_query_header[2]
+	no_of_questn_answered = 1
+
+	header1 = query[0:2]
+	header2 = struct.pack('!HHHH', no_of_questions, no_of_questn_answered, 0, 0)
+
+	header = header1 + "\x81\x80" + header2
+	start = 12
+	field = query[start:]	
+	domain, end, query_type, query_class = parse_questn(field)
+	print "server_name: ", server_name
+	print "domain: ", domain 
+	if server_name != domain:
+		print "Domain name not equal to server name====== Exiting========="
+		sys.exit()
+
+	answer = create_response(closest_ip, query[start:start+end], query_type, query_class) #Creating response
+	res = struct.pack('!HHHH', no_of_questions, no_of_questn_answered, 0, 0)
+	response = query[0:2] + "\x81\x80" + res + answer
+
+	sock.sendto(response, info)			#Sending response to the client
+
+#Checking and validating the contents of the question from the client
+def parse_questn(field):
+
+	domain = ""
+	length_field = struct.unpack('!B', field[0])
+	start = 1
+	while (length_field[0] != 0):
+		end = start + length_field[0]
+		unpack_arg = str(length_field[0]) + 's'
+		if not domain:
+			domain = struct.unpack(unpack_arg, field[start:end])[0]
+
+		else:
+			domain = domain + '.' + struct.unpack(unpack_arg, field[start:end])[0]
+
+		start = end + 1
+		length_field = struct.unpack('!B', field[end])
+
+	q_type = struct.unpack('!H', field[end+1:end+3])[0]
+	q_class = struct.unpack('!H', field[end+3:end+5])[0]
+	return domain, end+5, q_type, q_class
+
+#Creating response (answer) to the client 
+def create_response(recv_ip, ans_field, q_type, q_class):
+
+	ptr = '\xc0\x0c'
+	ttl = 2
+	length = 4
+	octet = recv_ip.split('.')
+	pack_arg = '!HHLHBBBB'
+	ans_pack = struct.pack(pack_arg, q_type, q_class, ttl, length, int(octet[0]), int(octet[1]), int(octet[2]), int(octet[3]))
+	ans = ans_field + ptr + ans_pack
+
+	return ans
+
+
+#Execution starts here
+port, cdn_name = command_args()
+src_ipaddr = src_ip()
+server_socket = server_socket(src_ipaddr, port)
+req_array = {} 						#dictionary for the best replica
+server_forever(server_socket, req_array, cdn_name)  	#Keeping the DNS server always on
+

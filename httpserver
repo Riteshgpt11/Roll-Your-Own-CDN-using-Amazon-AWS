@@ -1,0 +1,168 @@
+#!/usr/bin/python
+import socket
+import sys
+import urlparse
+import urllib
+import os
+import sqlite3
+import zlib
+from threading import Thread
+
+#Checking and validating for correct command line arguments
+def command_args():
+
+	if len(sys.argv) != 5:
+		print "Error: Improper number of arguments"
+		sys.exit()
+
+	if sys.argv[1] != '-p' or sys.argv[3] != '-o' or sys.argv[4] == '':
+		print "Error: Improper format of arguments"
+	else:
+		port = int(sys.argv[2])
+		origin = sys.argv[4]
+	return port, origin
+
+#Creating a dummy socket to retrieve the IP address
+def src_ip():
+
+
+	sock = socket.socket()
+	hosts = socket.gethostbyname('www.ccs.neu.edu')
+	sock.connect((hosts, 80))
+	src_ipaddr = sock.getsockname()[0]
+	print "Source IP: ", src_ipaddr
+	sock.close()
+	return src_ipaddr
+
+
+#Creating a database for maintaining cache
+def db_connection():
+
+	connect=sqlite3.connect("my_cache.db")
+	connection = connect.cursor()
+	return connection, connect
+
+#Creating table for database
+def db_table(conn):
+
+	conn.execute('''CREATE TABLE IF NOT EXISTS CACHE
+	(Path TEXT, FileContents BLOB, HitCount INT);''')
+
+#Creating Http server socket
+def server(host, port, origin):
+
+	s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+	s.bind((socket.gethostbyname(host), port))
+	s.listen(1)
+
+	try:
+	   while True:
+		print "Waiting for connection......"
+		conn, connect = db_connection()
+		db_table(conn)
+		socket_client, client_info = s.accept() 	#Accepting requests from the clients
+		#Multithreading to improve the efficiency of the response from the server to the client
+
+		t = Thread(target = service(socket_client, client_info, origin, conn, connect))
+		t.start()
+
+	except KeyboardInterrupt:		#Shutting down the server when Ctrl^C is pressed
+
+                print "\nShutting Down Server............"
+                s.close()
+                sys.exit()
+
+#Retreiving requested path from the client and sending data with response 200 OK
+def service(sock, client_addr, origin, conn, connect):
+
+	request = sock.recv(4096)
+	path = get_path(request)
+	data = serving_forever(origin, path, conn)	#Keeping the server on for receiving requests from the client
+	connect.commit()
+	connect.close()
+	length=len(data)
+        res="HTTP/1.1 200 OK \r\n"+ "Content-Length: "+ str(length)  +"\n" +"Content-Type: text/html\n"+"\n"
+	sock.send(res)			#Sending 200 OK response
+	sock.send(data)			#Sending requested data
+	sock.close()
+
+#Retreiving the path for the requested web page
+def get_path(req):
+
+	path1 = req.split('\r\n')[0]
+
+	token = path1.split()
+
+	if token[0] == 'GET':
+		path = urlparse.urlparse(token[1]).path
+
+		if path == '':
+			  return '/'
+		return path
+	return None
+
+#Providing the response to the client 
+def serving_forever(origin, path, conn):
+
+	#Fetching data from cache if present
+	conn.execute("SELECT Path FROM Cache WHERE Path = :Path",{"Path":path})
+
+	nextPath = conn.fetchone()
+
+	if nextPath == None:
+		#If data not present in cache, fetching data from server
+		print " Fetch From Origin!: ", path
+
+		url = "http://" + origin + ":8080" + path
+		urll = urllib.urlopen(url).read()
+
+		#Storing the data in compressed format
+		data = buffer(zlib.compress(urll))
+		#Creating a counter to count the number of times the page is requested
+		hitCount = 1
+		filestat = os.stat('my_cache.db')
+		cache_size = filestat.st_size		#Retreiving the size of the cache file 
+		print "Cache_size: ", cache_size
+
+		if ((cache_size + len(data))  < 9960000):			#Checking if Cache does not exceedsthe limit of 10MB
+
+			#Entering into cache if the size of the cache file is unser the limit of 10 MB
+			conn.execute("INSERT INTO Cache(Path,FileContents,HitCount)VALUES(?,?,?)", (path,data,hitCount))
+		else:
+
+			#Deleting the entry from the cache with the lowest number of hit count
+			print "cache size more than 9MB...Deleting 1 with lowest hits"
+			conn.execute("DELETE FROM Cache WHERE Path = (SELECT Path FROM Cache WHERE hitcount = (SELECT MIN(hitcount) FROM Cache))")
+			#Inserting the latest obtained content into database
+			print "inserting the last obtained content"
+			conn.execute("INSERT INTO Cache(Path,FileContents,HitCount)VALUES(?,?,?)", (path,data,hitCount))
+		return urll
+
+
+	else:
+		#Using cache to respond if the file is present in cache
+		print "file present in database....Using cache.........."
+		cache_content = conn.execute("SELECT FileContents FROM Cache WHERE Path=:Path", {"Path": path})
+		nextPath = conn.fetchone()
+		hit = conn.execute("SELECT HitCount FROM Cache WHERE Path=:Path", {"Path": path})
+		hitCount = conn.fetchone()
+		hitCount = hitCount[0]
+		hitCount += 1		#Incrementing the hit count
+		print "hitCount : ", hitCount
+		#Decompressing the compressed data in the cache file and sending it to the client
+		content = zlib.decompress(nextPath[0])
+		#Updating the hit count in the database
+		conn.execute("UPDATE Cache SET HitCount =:HitCount WHERE Path=:Path", {"HitCount":hitCount, "Path": path})
+	
+		return content	
+
+#Execution starts here
+port, origin_server = command_args()
+host_address = src_ip()
+server(host_address, port, origin_server)
+
+
+
+
+
+

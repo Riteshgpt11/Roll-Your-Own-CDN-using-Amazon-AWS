@@ -1,0 +1,81 @@
+#!/usr/bin/python
+import subprocess
+import sys
+
+#List of Replica servers
+
+replica_servers=[
+"ec2-52-90-80-45.compute-1.amazonaws.com",
+"ec2-54-183-23-203.us-west-1.compute.amazonaws.com",
+"ec2-54-70-111-57.us-west-2.compute.amazonaws.com",
+"ec2-52-215-87-82.eu-west-1.compute.amazonaws.com",
+"ec2-52-28-249-79.eu-central-1.compute.amazonaws.com",
+"ec2-54-169-10-54.ap-southeast-1.compute.amazonaws.com",
+"ec2-52-62-198-57.ap-southeast-2.compute.amazonaws.com",
+"ec2-52-192-64-163.ap-northeast-1.compute.amazonaws.com",
+"ec2-54-233-152-60.sa-east-1.compute.amazonaws.com"]
+
+dns_server="cs5700cdnproject.ccs.neu.edu"								#dns server location
+
+#Checking and validating the command line arguments
+def command_args():
+
+	global port
+	global origin
+	global name
+	global username
+	global keyfile
+
+	if len(sys.argv) != 11:
+		print "Error: Improper number of arguments"
+		sys.exit()
+
+	elif sys.argv[1] != '-p' or sys.argv[3] != '-o' or sys.argv[5] != '-n' or sys.argv[7] != '-u' or sys.argv[9] != '-i':
+		print "Error: Improper format of arguments"
+		sys.exit()
+
+	if int(sys.argv[2]) not in range(40000, 65536):
+		print "Error: Use port numbers between 40000 to 65535"
+		sys.exit()
+	else:
+		port = sys.argv[2]
+
+	origin = sys.argv[4]
+	name = sys.argv[6]
+	username = sys.argv[8]
+	keyfile = sys.argv[10]
+
+
+#Running the http server code on every replica
+def runCDN_http_servers():
+	global replica_servers
+
+
+	try:
+		for server in replica_servers:
+			#Logging into replica server and running http server copy
+			test=subprocess.check_output("ssh -i " + keyfile + " " + username + "@" + server + " '" + "DISPLAY=:0 ./httpserver -p " + str(port) + " -o " + origin + "< /dev/null > std.out 2> std.err &" + "'", shell=True)
+			print "Started server: " + str(server)
+	except Exception as ex:
+                        print "Exception Raised: " + str (ex)
+                        print "Retrying Running Httpserver...."
+			runCDN_http_servers()
+
+#Running DNS server code to the dns server location
+def runCDN_dns_server():										#start the dns server using ssh
+
+	global dns_server
+
+	try:
+			#Logging into dns server and running dns server copy
+        		subprocess.check_output("ssh -i " + keyfile + " " + username + "@" + dns_server + " '" + "DISPLAY=:0 ./dnsserver -p " + str(port) + " -n " + name + "< /dev/null > std.out 2> std.err &" + "'",shell=True)
+			print "Started DNS server"
+	except Exception as ex:
+                        print "Exception Raised: " + str (ex)
+                        print "Retrying Running DNSServer...."
+			runCDN_dns_server()
+
+#Execution starts here
+command_args()
+runCDN_http_servers()
+runCDN_dns_server()

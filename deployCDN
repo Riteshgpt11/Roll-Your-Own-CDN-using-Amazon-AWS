@@ -1,0 +1,83 @@
+#!/usr/bin/python
+import subprocess
+import sys
+
+#DNS Server Location
+
+dns_server="cs5700cdnproject.ccs.neu.edu"
+
+#List of replica servers
+replica_servers=[
+"ec2-52-90-80-45.compute-1.amazonaws.com",
+"ec2-54-183-23-203.us-west-1.compute.amazonaws.com",
+"ec2-54-70-111-57.us-west-2.compute.amazonaws.com",
+"ec2-52-215-87-82.eu-west-1.compute.amazonaws.com",
+"ec2-52-28-249-79.eu-central-1.compute.amazonaws.com",
+"ec2-54-169-10-54.ap-southeast-1.compute.amazonaws.com",
+"ec2-52-62-198-57.ap-southeast-2.compute.amazonaws.com",
+"ec2-52-192-64-163.ap-northeast-1.compute.amazonaws.com",
+"ec2-54-233-152-60.sa-east-1.compute.amazonaws.com"]
+
+#Checking and validating the command line arguments
+def command_args():
+
+	global port
+	global origin
+	global name
+	global username
+	global keyfile
+
+	if len(sys.argv) != 11:
+		print "Error: Improper number of arguments"
+		sys.exit()
+
+	elif sys.argv[1] != '-p' or sys.argv[3] != '-o' or sys.argv[5] != '-n' or sys.argv[7] != '-u' or sys.argv[9] != '-i':
+		print "Error: Improper format of arguments"
+		sys.exit()
+
+	if int(sys.argv[2]) not in range(40000, 65536):
+		print "Error: Use port numbers between 40000 to 65535"
+		sys.exit()
+	else:
+		port = sys.argv[2]
+
+
+	origin = sys.argv[4]
+	name = sys.argv[6]
+	username = sys.argv[8]
+	keyfile = sys.argv[10]
+
+#Deploying the http server code on every replica
+def deployCDN_http_servers():
+	global replica_servers
+
+	try:
+		for server in replica_servers:
+			#Copying the file into the replica server
+			testhttp = subprocess.check_output("scp -i " + keyfile + " httpserver " + username + "@" + server + ":~", shell=True)
+			#Logging into replica server and providing the execution permission
+			test1http = subprocess.check_output("ssh -i " + keyfile + " " + username + "@" + server + " 'chmod 711 ~/httpserver'",shell=True)
+			print "Deployed server on: " + str(server)
+	except Exception as ex:
+			print "Exception Raised: " + str (ex)
+
+
+#deploy dns server code to the dns server location
+def deployCDN_dns_server():
+	global dns_server
+
+	try:
+
+		#Copying the file into the dns server location
+		testdns = subprocess.check_output("scp -i " + keyfile + " dnsserver " + username + "@" + dns_server + ":~",shell=True)
+		#Logging into dns server and providing the execution permission
+		test1dns = subprocess.check_output("ssh -i " + keyfile + " " + username + "@" + dns_server + " 'chmod 711 ~/dnsserver'",shell=True)
+		print "Deployed DNS server"
+	except Exception as ex:
+                        print "Exception Raised: " + str (ex)
+
+
+#start execution from here
+command_args()
+deployCDN_http_servers() 
+deployCDN_dns_server()
